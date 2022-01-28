@@ -2,8 +2,8 @@ SET CURRENT SCHEMA = DW;
 
 SET CURRENT PATH = SYSIBM,SYSFUN,SYSPROC,SYSIBMADM,DB2W;
 
-CREATE OR REPLACE PROCEDURE DW.LOAD_LINE_ITEM_DETAILS ( )
-  SPECIFIC SQL211020133754876
+CREATE OR REPLACE PROCEDURE DW.LOAD_LINE_ITEM_DETAILS_NEW ( )
+  SPECIFIC SQL220121075945275
   LANGUAGE SQL
   NOT DETERMINISTIC
   NO EXTERNAL ACTION
@@ -17,93 +17,10 @@ EXECUTE IMMEDIATE 'TRUNCATE TABLE dw.LINE_ITEM_DETAILS IMMEDIATE REUSE STORAGE';
 
 INSERT INTO dw.LINE_ITEM_DETAILS
 
-with
-cust_edi as
-(
-select distinct
-cl.line_item_id
-from remote_db2p.WORKFLOW.CPO_WORKFLOWS c
-left join remote_db2p.WORKFLOW.CPO_WORKFLOWS_LINES cl on cl.CPOWF_ID = c.CPOWF_ID
-where c.status_id = 99)
-,ESD as
-(Select es.LINE_ITEM_ID, CH.DESCRIPTION , es.ESD, o.USER_NAME
-from REMOTE_DB2P.PARTS.ESTIMATED_SHIP_DATE es 
-left join REMOTE_DB2P.CT.ESD_CHANGE_REASONS CH ON CH.REASON_ID = es.REASON_ID 
-left join DW.ORGANIZATION o on o.ORGANIZATION_ID = es.CREATED_USER_ID
-WHERE ES.ACTIVE ='Y'
-)
-, cust_edi855 as
-(
-SELECT
-sli.id_no as line_item_id
-, sum(case when cmet.STATUS_ID = -601 then 1 else 0 end) as EDI855
-, sum(case when cmet.STATUS_ID = -602 then 1 else 0 end) as EDI856
-FROM remote_db2p.PARTS.SLS_LINE_ITEMS SLI
-JOIN remote_db2p.PARTS.SLS_ORDERS ORD ON SLI.ORDER_ID = ORD.ID_NO
-JOIN remote_db2p.WORKFLOW.CNOT_WORKFLOWS CNOT ON SLI.LINE_ITEM_PO = CNOT.CUSTOMER_PO_NUMBER AND ORD.COMPANY_ID = CNOT.CUSTOMER_ID
-join remote_db2p.WORKFLOW.CNOT_MILESTONES cmet on cmet.CNOTWF_ID = CNOT.CNOTWF_ID and cmet.status_id in (-601,-602)
-where locate(sli.id_no,cmet.meta) >0
-group by
-sli.id_no
-)
-, vend_edi as
-(
-SELECT
-pol.SO_LINE_ITEM_ID as line_item_id
-, sum(case when POM.STATUS_ID = -122 then 1 end) as vendor_850
-, sum(case when POM.STATUS_ID = -109 then 1 end) as vendor_855
-, sum(case when POM.STATUS_ID = -111 then 1 end) as vendor_856
-FROM remote_db2p.WORKFLOW.PO_WORKFLOWS POW
-JOIN remote_db2p.PARTS.PO_HEADERS POH ON POW.PO_HEADER_ID = POH.ID_NO
-JOIN remote_db2p.WORKFLOW.PO_MILESTONES POM ON POM.POWF_ID = POW.POWF_ID
-join remote_db2p.PARTS.PO_LINE_ITEMS pol on pol.PURCHASE_ORDER_ID = POH.ID_NO
-where POM.STATUS_ID in ( -122,-109,-111)
-group by
-pol.so_line_item_id
-)
-, purchase_ord as
-(
-SELECT LINE_ITEM_ID, max(CREATED_TIMESTAMP) as max_time
-FROM remote_db2p.PARTS.SLS_PURCHASE_LINES WHERE STATUS_ID <> 5
-group by line_item_id
-)
-, purchase_ids as
-(
-select
-p.line_item_id
-, p.purchase_id
-, ct.payment_code
-, p.oem_shipping_handling_fee
-, p.exchange_fee
-, p.processing_fee
-, p.minimum_order_fee
-, p.transit_coverage
-, p.PROGRAM_FEE
-from remote_db2p.PARTS.SLS_PURCHASE_LINES p
-join purchase_ord o on p.line_item_id = o.line_item_id and p.created_timestamp =o.max_time
-left join remote_db2p.ct.ct_sls_payment_codes ct on ct.payment_code_id = p.payment_code_id
-)
-, backordered as
-(
-select line_item_id
-from DW.LINE_ITEM_STATUS_SUMMARY
-where FIRST_BACKORDERED_TIMESTAMP is not null
-)
-, order_conf as
-(
-select distinct
-sli.id_no
-from remote_db2p.PARTS.SLS_LINE_ITEMS sli
-LEFT JOIN remote_db2p.PARTS.SLS_LINE_ITEM_ADMIN_ACTIONS AA ON AA.LINE_ITEM_ID = SLI.ID_NO
-left JOIN remote_db2p.PARTS.PO_LINE_ITEMS POL ON SLI.ID_NO = POL.SO_LINE_ITEM_ID
-left JOIN remote_db2p.WORKFLOW.PO_WORKFLOWS POFLOW ON POL.PURCHASE_ORDER_ID = POFLOW.PO_HEADER_ID
-LEFT JOIN remote_db2p.WORKFLOW.PO_MILESTONES STN ON STN.POWF_ID = POFLOW.POWF_ID
-where (stn.status_id = -111 OR AA.ACTION_TYPE_ID = 5)
-)
-, max_time as
+with max_time as
 (select SLICON.LINE_ITEM_ID
 ,max(SLICON.CREATED_TIMESTAMP) as time_stamp
-from remote_db2p.PARTS.SLS_LINE_ITEM_CONFIRMATIONS SLICON
+from PARTS.SLS_LINE_ITEM_CONFIRMATIONS SLICON
 group by SLICON.LINE_ITEM_ID
 )
 ,update_time as
@@ -111,8 +28,8 @@ group by SLICON.LINE_ITEM_ID
 select SLICON.LINE_ITEM_ID
 , PP.USER_NAME
 , slicon.CONFIRMATION_NOTES
-from remote_db2p.PARTS.SLS_LINE_ITEM_CONFIRMATIONS SLICON
-LEFT JOIN remote_db2p.CT.PER_PERSONNEL PP ON SLICON.CONFIRMED_BY_ID = PP.ID_NO
+from PARTS.SLS_LINE_ITEM_CONFIRMATIONS SLICON
+LEFT JOIN DW.ORGANIZATION PP ON SLICON.CONFIRMED_BY_ID = PP.ORGANIZATION_ID
 inner join max_time mt on mt.LINE_ITEM_ID = SLICON.LINE_ITEM_ID and mt.TIME_STAMP = SLICON.CREATED_TIMESTAMP
 )
 ,invoices as
@@ -145,7 +62,7 @@ where row_num=1
 SELECT
 LINE_ITEM_ID
 , sum(1) as t
-FROM remote_db2p.PARTS.SLS_LINE_ITEM_ADMIN_ACTIONS
+FROM PARTS.SLS_LINE_ITEM_ADMIN_ACTIONS
 WHERE ACTION_TYPE_ID IN (3,4)
 group by
 line_item_id
@@ -159,7 +76,7 @@ SL.LINE_ITEM_ID
 , MIN(SL.RESEARCH_TYPE_ID) AS RESEARCHTYPEMIN
 , MAX(CASE WHEN SL.RESEARCH_TYPE_ID IN ( 2, 3 ) THEN 1 ELSE 0 END) AS SPPRESEARCH
 , MAX(CASE WHEN SL.CREATED_USER_ID = 3 THEN 1 ELSE 0 END) AS SYSTEM_FLAG
-FROM remote_db2p.PARTS.SLS_LINE_RESEARCHED_VENDORS SL
+FROM PARTS.SLS_LINE_RESEARCHED_VENDORS SL
 GROUP BY SL.LINE_ITEM_ID
 )
 , ship_documents as
@@ -168,19 +85,13 @@ SELECT
 SDL.LINE_ITEM_ID
 , SHP.PRIORITY_CODE
 , SSD.ORDER_ID
-FROM remote_db2p.PARTS.SLS_SHIPPING_DOCUMENTS SSD
-LEFT JOIN remote_db2p.PARTS.SLS_SHIPPING_DOCUMENT_LINES SDL ON SSD.ID_NO = SDL.SHIPPING_DOCUMENT_ID
+FROM PARTS.SLS_SHIPPING_DOCUMENTS SSD
+LEFT JOIN PARTS.SLS_SHIPPING_DOCUMENT_LINES SDL ON SSD.ID_NO = SDL.SHIPPING_DOCUMENT_ID
 LEFT JOIN remote_db2p.CT.CT_SHIP_PRIORITIES SHP ON SSD.SHIP_PRIORITY_ID = SHP.PRIORITY_ID
 )
-, functional_location as
-(
-SELECT
-FV.LINE_ITEM_ID 
-, FV.FIELD_VALUE 
-FROM remote_db2p.PARTS.SLS_FIELD_VALUES FV 
-INNER JOIN remote_db2p.COMPANIES.CMP_FIELD_DEFINITIONS FD ON FD.FIELD_DEF_UID = FV.FIELD_DEF_UID 
-where fd.name = 'FunctionalLocationNumber'
-)
+
+
+
 SELECT DISTINCT
 SLI.ID_NO AS LINE_ITEM_ID
 , SLI.PART_NUMBER AS REQUESTED_PART_NUMBER
@@ -238,8 +149,8 @@ END AS SUBSCRIPTION_NAME
 , SLI.BACKORDER_SHIP_DATE
 , coalesce(slr.item_number
 , II.ITEM_NUMBER
-, case 
-when II.ITEM_NUMBER is null and SLR.INV_ITEM_COST_ID is not null and sli.ORDER_TYPE_ID not in (3,4) then 'V'||SLR.VENDOR_ID||'-'||SLR.REPLACEMENT_PART_NUMBER_STRIPPED 
+, case
+when II.ITEM_NUMBER is null and SLR.INV_ITEM_COST_ID is not null and sli.ORDER_TYPE_ID not in (3,4) then 'V'||SLR.VENDOR_ID||'-'||SLR.REPLACEMENT_PART_NUMBER_STRIPPED
 when sli.ORDER_TYPE_ID in (3,4) and SLR.CREATED_USER_ID=3 and SLR.RESEARCH_TYPE_ID IN (2,3,4) then 'V'||SLR.VENDOR_ID||'-'||SLI.PART_NUMBER_STRIPPED
 else null end) AS PIM_ITEM_NUMBER
 , FV.FIELD_VALUE AS FUNCTIONAL_LOCATION
@@ -279,7 +190,7 @@ ELSE Pts.Type_Name
 END AS SUBSCRIPTION_Type
 , case when c855.EDI855 >0 then 1 else 0 end as Cust_EDI_CONF
 , case when c855.EDI856 >0 then 1 else 0 end as Cust_EDI_Ship
-, substr(pp.CONFIRMATION_NOTES,1,2048) as CONFIRMATION_NOTES
+, pp.CONFIRMATION_NOTES
 , CASE WHEN SLI.HAD_SMARTSOURCED_RESEARCH = 'Y' THEN 1 ELSE 0 END AS SMART_SOURCE_PRESENTED
 , spl.transit_coverage
 , sli.cost_center
@@ -288,7 +199,7 @@ END AS SUBSCRIPTION_Type
 ,SLR.IS_FORMULARY_OUTRIGHT_OPTION
 ,SLR.IS_FORMULARY_EXCHANGE_OPTION
 ,SLR.CONTRACT_PRO_ID
-,COND.WEB_DISPLAY_CODE AS WEB_DISPLAY_CODE 
+,COND.WEB_DISPLAY_CODE AS WEB_DISPLAY_CODE
 ,ES.DESCRIPTION AS ESD_DESCRIPTION
 ,es.ESD AS ESTIMATED_SHIPPING_DATE
 ,es.USER_NAME as LAST_ESD_UPDATED_BY
@@ -301,21 +212,25 @@ END AS SUBSCRIPTION_Type
 ,SLI.OEM_ID
 ,ORD.REQUESTOR_ID
 ,slr.CORE_CHARGE
-,SLI.VENDOR_RESEARCH_ID 
+,SLI.VENDOR_RESEARCH_ID
 ,case when SLI.RETURN_REQUIRED = 'Y' then (slr.outright_price-slr.exchange_price)*INTEGER(sli.Quantity+sli.Return_Quantity) else 0 end as Estimated_Add_Bill
-,case when spl.exchange_fee > 0 then 1 else 0 end as Exchange_Fee_Charged 
+,case when spl.exchange_fee > 0 then 1 else 0 end as Exchange_Fee_Charged
 ,sli.BACKORDER_FOLLOWUP_DATE
-, case when sli.ORDER_TYPE_ID in (37) or SLI.CLASS_ID = 42 then 1 else 0 end as Loaner_ind
+, case when sli.ORDER_TYPE_ID in (37) or SLI.CLASS_ID = 17 then 1 else 0 end as Loaner_ind
 
-FROM REMOTE_DB2P.PARTS.SLS_LINE_ITEMS SLI
+
+
+FROM PARTS.SLS_LINE_ITEMS SLI
 LEFT JOIN REMOTE_DB2P.PARTS.SLS_LINE_RESEARCHED_VENDORS SLR ON SLI.VENDOR_RESEARCH_ID = SLR.ID_NO
-LEFT JOIN REMOTE_DB2P.PIM.ITEMS II ON II.ITEM_ID = SLR.INV_ITEM_COST_ID
+LEFT JOIN DW.PIM_ITEMS II ON II.ITEM_ID = SLR.INV_ITEM_COST_ID
+
+
 
 LEFT JOIN research_ids SLR2 ON SLI.ID_NO = SLR2.LINE_ITEM_ID
 LEFT JOIN REMOTE_DB2P.CT.CT_INV_ITEM_CONDITION_CODES COND ON SLR.CONDITION_ID = COND.CONDITION_ID
 LEFT JOIN REMOTE_DB2P.CT.CT_WARRANTY_CODES WC ON SLR.WARRANTY_ID = WC.WARRANTY_ID
 LEFT JOIN update_time pp on pp.line_item_id = sli.id_no
-LEFT JOIN ship_documents SSD ON SLI.ORDER_ID = SSD.ORDER_ID AND SLI.ID_NO = SSD.LINE_ITEM_ID 
+LEFT JOIN ship_documents SSD ON SLI.ORDER_ID = SSD.ORDER_ID AND SLI.ID_NO = SSD.LINE_ITEM_ID
 /*Line Origin Joins*/
 LEFT JOIN REMOTE_DB2P.CT.CT_LINE_ORIGIN LO ON SLI.LINE_ORIGIN_ID = LO.LINE_ORIGIN_ID AND LO.LINE_ORIGIN_ID NOT IN (1,2)
 LEFT JOIN REMOTE_DB2P.CT.CT_LINE_ORIGIN LO2 ON (case when SLI.LINE_ORIGIN_ID in (3,4) then 2 else sli.line_origin_id end ) = LO2.LINE_ORIGIN_ID
@@ -327,22 +242,27 @@ LEFT JOIN REMOTE_DB2P.COMPANIES.WS_SUBSCRIPTIONS SUB2 ON SUB2.SUBSCRIPTION_ID = 
 LEFT JOIN REMOTE_DB2P.CT.CT_CMP_PACKAGES PKG2 ON SUB2.PACKAGE_ID = PKG2.PACKAGE_ID
 left join REMOTE_DB2P.ct.ct_cmp_package_types pts2 on pts2.type_id = pkg2.type_id
 
+
+
 LEFT JOIN REMOTE_DB2P.CT.CT_SLS_URGENCY_CODES URG ON SLI.URGENCY_ID = URG.URGENCY_ID
 LEFT JOIN invoices INV ON SLI.ID_NO = INV.LINE_ITEM_ID
-LEFT JOIN functional_location FV ON FV.LINE_ITEM_ID = SLI.ID_NO
-LEFT JOIN REMOTE_DB2P.PARTS.SLS_ORDERS ORD ON ORD.ID_NO = SLI.ORDER_ID
-left join REMOTE_DB2P.parts.sls_line_researched_vendors_pricing slvp on slvp.vendor_research_id = SLR.ID_NO
-left join order_conf ocon on ocon.id_no = sli.id_no
-LEFT JOIN purchase_ids SPL ON SLI.ID_NO = SPL.LINE_ITEM_ID
-left join backordered bord on bord.line_item_id = sli.id_no
-left join cust_edi cedi on cedi.line_item_id = sli.id_no
-left join vend_edi vedi on vedi.line_item_id = sli.id_no
+LEFT JOIN DW.FUNCTION_LOCATION FV ON FV.LINE_ITEM_ID = SLI.ID_NO
+LEFT JOIN PARTS.SLS_ORDERS ORD ON ORD.ID_NO = SLI.ORDER_ID
+left join parts.sls_line_researched_vendors_pricing slvp on slvp.vendor_research_id = SLR.ID_NO
+left join DW.LINE_ITEM_ORDER_CONF ocon on ocon.id_no = sli.id_no
+LEFT JOIN DW.PURCHASE_ORDERS SPL ON SLI.ID_NO = SPL.LINE_ITEM_ID
+left join DW.LINE_ITEM_STATUS_SUMMARY bord on bord.line_item_id = sli.id_no and FIRST_BACKORDERED_TIMESTAMP is not null
+left join DW.CUST_EDI_850_OLD Cedi on cedi.line_item_id = sli.id_no
+left join DW.VENDOR_EDI vedi on vedi.line_item_id = sli.id_no
 left join received_part_sort rps on rps.line_item_id = sli.id_no
-left join cust_edi855 c855 on c855.line_item_id = sli.id_no
+left join DW.CUST_EDIS c855 on c855.line_item_id = sli.id_no
 left join smart_order_po sopo on sopo.line_item_id = sli.id_no
 left JOIN REMOTE_DB2P.OEMDIRECT.ORDER_LINES ool ON ool.LINE_ITEM_ID = sli.ID_NO
-LEFT JOIN ESD ES ON ES.LINE_ITEM_ID = SLI.ID_NO
+LEFT JOIN DW.ESTIMATED_SHIP_INFO ES on ES.LINE_ITEM_ID = sli.ID_NO and ES.ACTIVE ='Y'
 left join REMOTE_DB2P.CT.CT_MODALITY_PRODTYPE_RELATIONS MPR on MPR.MODALITY_ID = SLI.MODALITY_ID AND MPR.PRODUCT_TYPE_ID = SLI.CLASS_ID
+
+
+
 
 
 WHERE SLI.CREATED_TIMESTAMP >= '2008-01-01'
