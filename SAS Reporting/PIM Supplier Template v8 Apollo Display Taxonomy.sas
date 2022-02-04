@@ -114,6 +114,7 @@ s.PARENT_NAME as Structure_Parent_Name
 , pip.search_item_number as Item_Number
 , pip.OEM_item_number
 , pip.product_number
+, pip.sub_type as Item_Subtype
 from D_DW.PIM_ITEM_PRICES pip
 left join D_DW.PIM_ITEMS i on i.ITEM_NUMBER=pip.SEARCH_ITEM_NUMBER
 left join D_DW.PIM_PRODUCT_STRUCTURE s on s.STRUCTURE_ID=i.PS_STRUCTURE_ID
@@ -266,6 +267,7 @@ p.Structure_Parent_Name
 , p.Vendor_Name
 , p.Vendor_Part_Number
 , p.item_Number as Vendor_Item_Number
+, p.Item_Subtype
 , p.DESCRIPTION
 , p.OEM_ID
 , p.OEM_Name
